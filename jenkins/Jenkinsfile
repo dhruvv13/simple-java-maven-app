@@ -1,28 +1,63 @@
 pipeline {
     agent any
-    options {
-        skipStagesAfterUnstable()
+    
+    tools {
+        maven 'maven-3' // Ab Jenkins ko pata chal jayega 'mvn' kahan hai!
     }
+
+    environment {
+        NEXUS_IP = '3.111.196.158'
+        IMAGE_NAME = 'my-app'
+        IMAGE_TAG = '1.2'
+        DOCKER_HUB_USER = 'dhruvv13' 
+    }
+
     stages {
-        stage('Build') {
+        stage('Step 1: Build & Package App') {
             steps {
-                sh 'mvn -B -DskipTests clean package'
+                echo "--- Compiling and Packaging the Java Application ---"
+                sh 'mvn clean package'
             }
         }
-        stage('Test') {
+
+        stage('Step 2: Build Docker Image') {
             steps {
-                sh 'mvn test'
+                echo "--- Generating Dockerfile on the fly ---"
+                sh 'echo "FROM eclipse-temurin:8-jre\nEXPOSE 8080\nCOPY target/*.jar app.jar\nENTRYPOINT [\\"java\\", \\"-jar\\", \\"app.jar\\"]" > Dockerfile'
+                
+                echo "--- Containerizing the Application ---"
+                sh "docker build -t ${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG} ."
+                sh "docker build -t ${NEXUS_IP}:8082/${IMAGE_NAME}:${IMAGE_TAG} ."
             }
-            post {
-                always {
-                    junit 'target/surefire-reports/*.xml'
+        }
+
+        stage('Step 3: Push to Docker Hub') {
+            steps {
+                echo "--- Pushing Image to Docker Hub ---"
+                withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', passwordVariable: 'DOCKER_HUB_PASSWORD', usernameVariable: 'DOCKER_HUB_USERNAME')]) {
+                    sh "echo \$DOCKER_HUB_PASSWORD | docker login -u \$DOCKER_HUB_USERNAME --password-stdin"
+                    sh "docker push ${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
                 }
             }
         }
-        stage('Deliver') { 
+
+        stage('Step 4: Push to Nexus Registry') {
             steps {
-                sh './jenkins/scripts/deliver.sh' 
+                echo "--- Pushing Image to Private Nexus Registry ---"
+                withCredentials([usernamePassword(credentialsId: 'nexus-creds', passwordVariable: 'NEXUS_PASSWORD', usernameVariable: 'NEXUS_USERNAME')]) {
+                    sh "echo \$NEXUS_PASSWORD | docker login -u \$NEXUS_USERNAME --password-stdin ${NEXUS_IP}:8082"
+                    sh "docker push ${NEXUS_IP}:8082/${IMAGE_NAME}:${IMAGE_TAG}"
+                }
             }
+        }
+    }
+    
+    post {
+        always {
+            echo "--- Pipeline execution finished! ---"
+        }
+        success {
+            echo "--- Awesome! Automation Success! ---"
         }
     }
 }
