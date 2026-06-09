@@ -2,7 +2,7 @@ pipeline {
     agent any
     
     tools {
-        maven 'maven-3' // Ab Jenkins ko pata chal jayega 'mvn' kahan hai!
+        maven 'maven-3.8' // Ab Jenkins ko pata chal jayega 'mvn' kahan hai!
     }
 
     environment {
