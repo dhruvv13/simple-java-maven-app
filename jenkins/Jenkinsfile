@@ -8,7 +8,6 @@ pipeline {
         // Tumne bilkul sahi pakda tha, 'maven-3.8' hi naam hai tool ka
         maven 'maven-3.8' 
     }
-
     stages {
         stage('Step 0: Test Shared Library') {
             steps {
