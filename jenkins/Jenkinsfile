@@ -5,8 +5,9 @@ pipeline {
         maven 'maven-3.8'
     }
     
+    // Yahan pipeline level par variable define kar diya taaki saari stages use kar sakein
     environment {
-        IMAGE_NAME = ""
+        APP_VERSION = ""
     }
 
     stages {
@@ -14,23 +15,21 @@ pipeline {
             steps {
                 script {
                     echo '--- Incrementing Pom.xml Version via Maven ---'
-                    // Yeh command pom.xml ka incremental version automatic +1 badha degi
+                    // Yeh command pom.xml mein incremental version (+1) badha degi
                     sh 'mvn build-helper:parse-version versions:set -DnewVersion=\\\${parsedVersion.majorVersion}.\\\${parsedVersion.minorVersion}.\\\${parsedVersion.nextIncrementalVersion} versions:commit'
                     
                     // Nana wala regex logic version string filter karne ke liye
                     def matcher = readFile('pom.xml') =~ '<version>(.+)</version>'
-                    def appVersion = matcher[0][1]
+                    env.APP_VERSION = matcher[0][1]
                     
-                    // Docker image ke liye naya dynamic tag set kar diya
-                    env.IMAGE_NAME = "${appVersion}-${BUILD_NUMBER}"
-                    echo "--- New Dynamic Image Tag Created: ${env.IMAGE_NAME} ---"
+                    echo "--- New Version Parsed Successfully: ${env.APP_VERSION} ---"
                 }
             }
         }
 
         stage('Step 2: Build App Jar') {
             steps {
-                // Purane target folder ko clean karke fresh jar build karega
+                // Purane target folder ko clean karke fresh jar build karega naye version ke sath
                 sh 'mvn clean package'
             }
         }
@@ -38,11 +37,15 @@ pipeline {
         stage('Step 3: Build & Push Docker Image') {
             steps {
                 script {
-                    // Tumhaara ekdum sahi wala ID 'docker-hub-creds' yahan set kar diya hai!
+                    // Tumhaara sahi credentialsId 'docker-hub-creds' use kar rahe hain
                     withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
-                        sh "docker build -t ${USER}/demo-app:${env.IMAGE_NAME} ."
+                        // Yahan dynamic tag banega: Version-BuildNumber (Jaise 1.1.1-SNAPSHOT-11)
+                        def imageTag = "${env.APP_VERSION}-${env.BUILD_NUMBER}"
+                        
+                        echo "--- Building Docker Image with Tag: ${imageTag} ---"
+                        sh "docker build -t ${USER}/demo-app:${imageTag} ."
                         sh "echo \$PASS | docker login -u \$USER --password-stdin"
-                        sh "docker push ${USER}/demo-app:${env.IMAGE_NAME}"
+                        sh "docker push ${USER}/demo-app:${imageTag}"
                     }
                 }
             }
@@ -51,14 +54,15 @@ pipeline {
         stage('Step 4: Push Version Bump to GitHub') {
             steps {
                 script {
-                    // GitHub push ke liye jo humne abhi naya credentialsId banaya hai
+                    // GitHub push ke liye jo token wala credentialsId banaya tha
                     withCredentials([usernamePassword(credentialsId: 'github-credentials', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
                         sh 'git config --global user.email "jenkins@example.com"'
                         sh 'git config --global user.name "jenkins"'
                         
+                        // GitHub origin URL ko securely update kar rahe hain push ke liye
                         sh "git remote set-url origin https://${USER}:${PASS}@github.com/dhruvv13/simple-java-maven-app.git"
                         sh 'git add pom.xml'
-                        sh 'git commit -m "ci: version bump [skip ci]"' 
+                        sh 'git commit -m "ci: version bump [skip ci]"' // [skip ci] se webhook dubara trigger nahi hoga, loop bach jayega!
                         sh 'git push origin HEAD:master'
                     }
                 }
