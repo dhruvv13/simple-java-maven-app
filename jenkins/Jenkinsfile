@@ -1,25 +1,67 @@
-// Shared library ko top par import karo
-@Library('my-shared-library') _  
-
 pipeline {
     agent any
     
     tools {
-        // Tumne bilkul sahi pakda tha, 'maven-3.8' hi naam hai tool ka
-        maven 'maven-3.8' 
+        maven 'maven-3.8'
     }
+    
+    environment {
+        IMAGE_NAME = ""
+    }
+
     stages {
-        stage('Step 0: Test Shared Library') {
+        stage('Step 1: Increment Version') {
             steps {
-                // Direct custom function call from vars/sayHello.groovy
-                sayHello('Dhruv Gupta') 
+                script {
+                    echo '--- Incrementing Pom.xml Version via Maven ---'
+                    // Yeh command pom.xml ka incremental version automatic +1 badha degi
+                    sh 'mvn build-helper:parse-version versions:set -DnewVersion=\\\${parsedVersion.majorVersion}.\\\${parsedVersion.minorVersion}.\\\${parsedVersion.nextIncrementalVersion} versions:commit'
+                    
+                    // Nana wala regex logic version string filter karne ke liye
+                    def matcher = readFile('pom.xml') =~ '<version>(.+)</version>'
+                    def appVersion = matcher[0][1]
+                    
+                    // Docker image ke liye naya dynamic tag set kar diya
+                    env.IMAGE_NAME = "${appVersion}-${BUILD_NUMBER}"
+                    echo "--- New Dynamic Image Tag Created: ${env.IMAGE_NAME} ---"
+                }
             }
         }
-        
-        stage('Step 1: Build App via Shared Library') {
+
+        stage('Step 2: Build App Jar') {
             steps {
-                // Direct custom function call from vars/buildJar.groovy
-                buildJar() 
+                // Purane target folder ko clean karke fresh jar build karega
+                sh 'mvn clean package'
+            }
+        }
+
+        stage('Step 3: Build & Push Docker Image') {
+            steps {
+                script {
+                    // Tumhaara ekdum sahi wala ID 'docker-hub-creds' yahan set kar diya hai!
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
+                        sh "docker build -t ${USER}/demo-app:${env.IMAGE_NAME} ."
+                        sh "echo \$PASS | docker login -u \$USER --password-stdin"
+                        sh "docker push ${USER}/demo-app:${env.IMAGE_NAME}"
+                    }
+                }
+            }
+        }
+
+        stage('Step 4: Push Version Bump to GitHub') {
+            steps {
+                script {
+                    // GitHub push ke liye jo humne abhi naya credentialsId banaya hai
+                    withCredentials([usernamePassword(credentialsId: 'github-credentials', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
+                        sh 'git config --global user.email "jenkins@example.com"'
+                        sh 'git config --global user.name "jenkins"'
+                        
+                        sh "git remote set-url origin https://${USER}:${PASS}@github.com/dhruvv13/simple-java-maven-app.git"
+                        sh 'git add pom.xml'
+                        sh 'git commit -m "ci: version bump [skip ci]"' 
+                        sh 'git push origin HEAD:master'
+                    }
+                }
             }
         }
     }
