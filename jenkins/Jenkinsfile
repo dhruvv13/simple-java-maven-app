@@ -1,7 +1,7 @@
 pipeline {
     agent any
     tools {
-        maven 'Maven'
+        maven 'maven-3.8'
     }
     environment {
         DOCKER_REPO_SERVER = '270278216475.dkr.ecr.ap-south-1.amazonaws.com'
