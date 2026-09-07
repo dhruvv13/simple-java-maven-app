@@ -1,70 +1,61 @@
 pipeline {
     agent any
-    
     tools {
-        maven 'maven-3.8'
+        maven 'Maven'
     }
-    
-    // Yahan pipeline level par variable define kar diya taaki saari stages use kar sakein
     environment {
-        APP_VERSION = ""
+        DOCKER_REPO_SERVER = '270278216475.dkr.ecr.ap-south-1.amazonaws.com'
+        DOCKER_REPO = "${DOCKER_REPO_SERVER}/java-maven-app"
+        APP_NAME = 'java-maven-app'
     }
-
     stages {
-        stage('Step 1: Increment Version') {
+        stage('increment version') {
             steps {
                 script {
-                    echo '--- Incrementing Pom.xml Version via Maven ---'
-                    // Yeh command pom.xml mein incremental version (+1) badha degi
-                    sh 'mvn build-helper:parse-version versions:set -DnewVersion=\\\${parsedVersion.majorVersion}.\\\${parsedVersion.minorVersion}.\\\${parsedVersion.nextIncrementalVersion} versions:commit'
-                    
-                    // Nana wala regex logic version string filter karne ke liye
-                    def matcher = readFile('pom.xml') =~ '<version>(.+)</version>'
-                    env.APP_VERSION = matcher[0][1]
-                    
-                    echo "--- New Version Parsed Successfully: ${env.APP_VERSION} ---"
+                    echo 'incrementing app version...'
+                    env.IMAGE_NAME = "v-${BUILD_NUMBER}"
                 }
             }
         }
-
-        stage('Step 2: Build App Jar') {
-            steps {
-                // Purane target folder ko clean karke fresh jar build karega naye version ke sath
-                sh 'mvn clean package'
-            }
-        }
-
-        stage('Step 3: Build & Push Docker Image') {
+        stage('build app') {
             steps {
                 script {
-                    // Tumhaara sahi credentialsId 'docker-hub-creds' use kar rahe hain
-                    withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
-                        // Yahan dynamic tag banega: Version-BuildNumber (Jaise 1.1.1-SNAPSHOT-11)
-                        def imageTag = "${env.APP_VERSION}-${env.BUILD_NUMBER}"
-                        
-                        echo "--- Building Docker Image with Tag: ${imageTag} ---"
-                        sh "docker build -t ${USER}/demo-app:${imageTag} ."
-                        sh "echo \$PASS | docker login -u \$USER --password-stdin"
-                        sh "docker push ${USER}/demo-app:${imageTag}"
-                    }
+                    echo "building the application..."
+                    sh 'mvn clean package'
                 }
             }
         }
-
-        stage('Step 4: Push Version Bump to GitHub') {
+        stage('build and push image') {
+            environment {
+                AWS_ACCESS_KEY_ID = credentials('jenkins_aws_access_key_id')
+                AWS_SECRET_ACCESS_KEY = credentials('jenkins_aws_secret_access_key')
+            }
             steps {
                 script {
-                    // GitHub push ke liye jo token wala credentialsId banaya tha
-                    withCredentials([usernamePassword(credentialsId: 'github-credentials', passwordVariable: 'PASS', usernameVariable: 'USER')]) {
-                        sh 'git config --global user.email "jenkins@example.com"'
-                        sh 'git config --global user.name "jenkins"'
-                        
-                        // GitHub origin URL ko securely update kar rahe hain push ke liye
-                        sh "git remote set-url origin https://${USER}:${PASS}@github.com/dhruvv13/simple-java-maven-app.git"
-                        sh 'git add pom.xml'
-                        sh 'git commit -m "ci: version bump [skip ci]"' // [skip ci] se webhook dubara trigger nahi hoga, loop bach jayega!
-                        sh 'git push origin HEAD:master'
-                    }
+                    echo "building the docker image..."
+                    sh "docker build -t ${DOCKER_REPO}:${IMAGE_NAME} ."
+                    
+                    echo "Logging into AWS ECR..."
+                    sh "aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ${DOCKER_REPO_SERVER}"
+                    
+                    echo "Pushing image to ECR..."
+                    sh "docker push ${DOCKER_REPO}:${IMAGE_NAME}"
+                }
+            }
+        }
+        stage('deploy to EKS') {
+            environment {
+                AWS_ACCESS_KEY_ID = credentials('jenkins_aws_access_key_id')
+                AWS_SECRET_ACCESS_KEY = credentials('jenkins_aws_secret_access_key')
+            }
+            steps {
+                script {
+                    echo 'Updating Kubeconfig for EKS Cluster...'
+                    sh "aws eks update-kubeconfig --name k8s-demo-cluster --region ap-south-1"
+                    
+                    echo 'Deploying to Kubernetes using envsubst...'
+                    sh 'envsubst < kubernetes/deployment.yaml | kubectl apply -f -'
+                    sh 'envsubst < kubernetes/service.yaml | kubectl apply -f -'
                 }
             }
         }
