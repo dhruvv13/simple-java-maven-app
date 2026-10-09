@@ -69,6 +69,11 @@ pipeline {
                     def fullImage = "${DOCKER_REPO}:${IMAGE_NAME}"
                     echo "Deploying ${fullImage} to ${ec2Instance}..."
 
+                    def ecrToken = sh(
+                        script: "aws ecr get-login-password --region ap-south-1",
+                        returnStdout: true
+                    ).trim()
+
                     withCredentials([sshUserPrivateKey(credentialsId: 'ec2-server-key', keyFileVariable: 'KEY_FILE', usernameVariable: 'USER_NAME')]) {
                         echo "Waiting for EC2 SSH and Docker readiness..."
                         sh """
@@ -81,10 +86,10 @@ pipeline {
                         sh "scp -i ${KEY_FILE} -o StrictHostKeyChecking=no server-cmds.sh ${ec2Instance}:/home/ec2-user/"
                         sh "scp -i ${KEY_FILE} -o StrictHostKeyChecking=no docker-compose.yaml ${ec2Instance}:/home/ec2-user/"
 
-                        echo "Running deployment on target EC2..."
+                        echo "Logging into ECR on target EC2 and running application..."
                         sh """
                             ssh -i ${KEY_FILE} -o StrictHostKeyChecking=no ${ec2Instance} "
-                                aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ${DOCKER_REPO_SERVER}
+                                echo '${ecrToken}' | docker login --username AWS --password-stdin ${DOCKER_REPO_SERVER}
                                 bash /home/ec2-user/server-cmds.sh ${fullImage}
                             "
                         """
