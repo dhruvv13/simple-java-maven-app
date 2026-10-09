@@ -52,10 +52,12 @@ pipeline {
                         sh 'terraform init'
                         sh 'terraform apply --auto-approve'
                         
-                        EC2_PUBLIC_IP = sh(
-                            script: "terraform output ec2_public_ip",
+                        def serverIp = sh(
+                            script: "terraform output -raw ec2_public_ip",
                             returnStdout: true
-                        ).trim().replaceAll('"', '')
+                        ).trim()
+                        env.EC2_PUBLIC_IP = serverIp
+                        echo "Target EC2 Public IP: ${env.EC2_PUBLIC_IP}"
                     }
                 }
             }
@@ -63,18 +65,29 @@ pipeline {
         stage('deploy to EC2') {
             steps {
                 script {
-                    def ec2Instance = "ec2-user@${EC2_PUBLIC_IP}"
+                    def ec2Instance = "ec2-user@${env.EC2_PUBLIC_IP}"
                     def fullImage = "${DOCKER_REPO}:${IMAGE_NAME}"
                     echo "Deploying ${fullImage} to ${ec2Instance}..."
 
-                    sshagent(['ec2-server-key']) {
-                        echo "Waiting for EC2 server to initialize..."
-                        sleep(time: 90, unit: "SECONDS")
+                    withCredentials([sshUserPrivateKey(credentialsId: 'ec2-server-key', keyFileVariable: 'KEY_FILE', usernameVariable: 'USER_NAME')]) {
+                        echo "Waiting for EC2 SSH and Docker readiness..."
+                        sh """
+                            for i in {1..20}; do
+                                ssh -i ${KEY_FILE} -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${ec2Instance} 'docker --version' && break || sleep 10
+                            done
+                        """
 
-                        sh "scp -o StrictHostKeyChecking=no server-cmds.sh ${ec2Instance}:/home/ec2-user/"
-                        sh "scp -o StrictHostKeyChecking=no docker-compose.yaml ${ec2Instance}:/home/ec2-user/"
-                        sh "ssh -o StrictHostKeyChecking=no ${ec2Instance} aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ${DOCKER_REPO_SERVER} || true"
-                        sh "ssh -o StrictHostKeyChecking=no ${ec2Instance} bash /home/ec2-user/server-cmds.sh ${fullImage}"
+                        echo "Copying configuration files..."
+                        sh "scp -i ${KEY_FILE} -o StrictHostKeyChecking=no server-cmds.sh ${ec2Instance}:/home/ec2-user/"
+                        sh "scp -i ${KEY_FILE} -o StrictHostKeyChecking=no docker-compose.yaml ${ec2Instance}:/home/ec2-user/"
+
+                        echo "Running deployment on target EC2..."
+                        sh """
+                            ssh -i ${KEY_FILE} -o StrictHostKeyChecking=no ${ec2Instance} "
+                                aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ${DOCKER_REPO_SERVER}
+                                bash /home/ec2-user/server-cmds.sh ${fullImage}
+                            "
+                        """
                     }
                 }
             }
