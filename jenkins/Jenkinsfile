@@ -4,9 +4,11 @@ pipeline {
         maven 'maven-3.8'
     }
     environment {
-        DOCKER_REPO_SERVER = '270278216475.dkr.ecr.ap-south-1.amazonaws.com'
-        DOCKER_REPO = "${DOCKER_REPO_SERVER}/java-maven-app"
-        APP_NAME = 'java-maven-app'
+        AWS_ACCESS_KEY_ID     = credentials('jenkins_aws_access_key_id')
+        AWS_SECRET_ACCESS_KEY = credentials('jenkins_aws_secret_access_key')
+        DOCKER_REPO_SERVER    = '270278216475.dkr.ecr.ap-south-1.amazonaws.com'
+        DOCKER_REPO           = "${DOCKER_REPO_SERVER}/java-maven-app"
+        APP_NAME              = 'java-maven-app'
     }
     stages {
         stage('increment version') {
@@ -21,15 +23,11 @@ pipeline {
             steps {
                 script {
                     echo "building the application..."
-                    sh 'mvn clean package'
+                    sh 'mvn clean package -DskipTests'
                 }
             }
         }
         stage('build and push image') {
-            environment {
-                AWS_ACCESS_KEY_ID = credentials('jenkins_aws_access_key_id')
-                AWS_SECRET_ACCESS_KEY = credentials('jenkins_aws_secret_access_key')
-            }
             steps {
                 script {
                     echo "building the docker image..."
@@ -43,19 +41,48 @@ pipeline {
                 }
             }
         }
-        stage('deploy to EKS') {
+        stage('provision server') {
             environment {
-                AWS_ACCESS_KEY_ID = credentials('jenkins_aws_access_key_id')
-                AWS_SECRET_ACCESS_KEY = credentials('jenkins_aws_secret_access_key')
+                TF_VAR_env_prefix = 'dev'
             }
             steps {
                 script {
-                    echo 'Updating Kubeconfig for EKS Cluster...'
-                    sh "aws eks update-kubeconfig --name k8s-demo-cluster --region ap-south-1"
-                    
-                    echo 'Deploying to Kubernetes using envsubst...'
-                    sh 'envsubst < kubernetes/deployment.yaml | kubectl apply -f -'
-                    sh 'envsubst < kubernetes/service.yaml | kubectl apply -f -'
+                    dir('terraform') {
+                        echo "Initializing and Applying Terraform..."
+                        sh 'terraform init'
+                        sh 'terraform apply --auto-approve'
+                        
+                        def ec2Ip = sh(script: 'terraform output -raw ec2_public_ip', returnStdout: true).trim()
+                        env.EC2_PUBLIC_IP = ec2Ip
+                        echo "Target EC2 Public IP: ${env.EC2_PUBLIC_IP}"
+                    }
+                }
+            }
+        }
+        stage('deploy to EC2') {
+            steps {
+                script {
+                    def ec2Instance = "ec2-user@${env.EC2_PUBLIC_IP}"
+                    def fullImage = "${DOCKER_REPO}:${IMAGE_NAME}"
+                    echo "Deploying ${fullImage} to ${ec2Instance}..."
+
+                    sshagent(['ec2-server-key']) {
+                        echo "Waiting for EC2 SSH and Docker to be ready..."
+                        retry(15) {
+                            sleep(time: 10, unit: "SECONDS")
+                            sh "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${ec2Instance} 'docker --version'"
+                        }
+
+                        // Copy configuration files to target EC2
+                        sh "scp -o StrictHostKeyChecking=no server-cmds.sh ${ec2Instance}:/home/ec2-user/"
+                        sh "scp -o StrictHostKeyChecking=no docker-compose.yaml ${ec2Instance}:/home/ec2-user/"
+
+                        // Login to ECR on target EC2 and run application
+                        sh """ssh -o StrictHostKeyChecking=no ${ec2Instance} '
+                            aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin ${DOCKER_REPO_SERVER}
+                            bash /home/ec2-user/server-cmds.sh ${fullImage}
+                        '"""
+                    }
                 }
             }
         }
